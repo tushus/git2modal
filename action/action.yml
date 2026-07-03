@@ -1,0 +1,56 @@
+# action.yml
+name: "Git2Modal Deploy"
+description: "Deploy Python code, AI models, and serverless tasks to Modal.com on every git push."
+author: "Git2Modal Team"
+
+branding:
+  icon: "upload-cloud"
+  color: "blue"
+
+inputs:
+  modal_token_id:
+    description: "Modal.com Token ID. Create one at https://modal.com/settings/tokens."
+    required: true
+  modal_token_secret:
+    description: "Modal.com Token Secret. Create one at https://modal.com/settings/tokens."
+    required: true
+  deploy_path:
+    description: "Relative path (from repo root) to the directory containing the Modal app file(s)."
+    required: false
+    default: "."
+  app_name:
+    description: "Optional explicit Modal app name. If not set, uses the app name from the Modal source file."
+    required: false
+    default: ""
+  modal_args:
+    description: "Extra CLI arguments to pass to `modal deploy` (e.g., --env=staging)."
+    required: false
+    default: ""
+  python_version:
+    description: "Python version to use in the runner (e.g., 3.11, 3.12)."
+    required: false
+    default: "3.11"
+  working_directory:
+    description: "Working directory relative to the repo root where your Modal code lives."
+    required: false
+    default: "."
+
+outputs:
+  deployment_url:
+    description: "URL of the deployed Modal app (if available)."
+    value: ${{ steps.deploy.outputs.deployment_url }}
+  deployment_status:
+    description: "Status of the deployment ('success' or 'failure')."
+    value: ${{ steps.deploy.outputs.deployment_status }}
+
+runs:
+  using: "docker"
+  image: "Dockerfile"
+  args:
+    - ${{ inputs.modal_token_id }}
+    - ${{ inputs.modal_token_secret }}
+    - ${{ inputs.deploy_path }}
+    - ${{ inputs.app_name }}
+    - ${{ inputs.modal_args }}
+    - ${{ inputs.python_version }}
+    - ${{ inputs.working_directory }}
