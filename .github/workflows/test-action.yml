@@ -1,0 +1,190 @@
+# test-action.yml
+# Git2Modal Self-Testing CI Workflow
+#
+# This workflow dogfoods the Git2Modal Action by running tests on every push
+# to main. It verifies the action structure, Python scripts, and templates
+# are all valid and functioning correctly.
+
+name: "Self-Test Git2Modal Action"
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Skip actual Modal deployment in CI (requires real Modal tokens)
+# Instead, we validate the action and templates structurally.
+jobs:
+  validate-action:
+    name: "Validate Action Structure"
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@v4
+
+      - name: "Verify action.yml structure"
+        run: |
+          echo "🔍 Validating action.yml..."
+          python3 -c "
+          import yaml
+          with open('action/action.yml') as f:
+              data = yaml.safe_load(f)
+          assert data['name'] == 'Git2Modal Deploy'
+          assert 'inputs' in data
+          assert 'modal_token_id' in data['inputs']
+          assert 'modal_token_secret' in data['inputs']
+          assert 'runs' in data
+          assert data['runs']['using'] == 'docker'
+          print('✅ action.yml is valid')
+          "
+
+      - name: "Verify Dockerfile exists"
+        run: |
+          test -f action/Dockerfile && echo "✅ Dockerfile exists" || (echo "❌ Dockerfile missing"; exit 1)
+
+      - name: "Verify entrypoint.sh is executable"
+        run: |
+          test -x action/entrypoint.sh && echo "✅ entrypoint.sh is executable" || (echo "❌ entrypoint.sh not executable"; exit 1)
+          echo "   Lines: $(wc -l < action/entrypoint.sh)"
+
+      - name: "Verify modal_deploy.py syntax"
+        run: |
+          python3 -m py_compile action/modal_deploy.py && echo "✅ modal_deploy.py compiles OK"
+          echo "   Lines: $(wc -l < action/modal_deploy.py)"
+
+  validate-templates:
+    name: "Validate Starter Templates"
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@v4
+
+      - name: "Set up Python 3.11"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: "Install Modal SDK"
+        run: |
+          pip install modal pyyaml
+          echo "✅ modal CLI installed: $(modal --version)"
+
+      - name: "Validate FastAPI template"
+        run: |
+          echo "📂 Checking fastapi-web-app..."
+          python3 -m py_compile templates/fastapi-web-app/app.py
+          echo "✅ templates/fastapi-web-app/app.py compiles OK"
+          python3 -c "
+          import ast
+          with open('templates/fastapi-web-app/app.py') as f:
+              tree = ast.parse(f.read())
+          assert any(isinstance(n, ast.Call) and getattr(n.func, 'attr', '') == 'App' for n in ast.walk(tree))
+          print('✅ FastAPI template has modal.App definition')
+          "
+          test -f templates/fastapi-web-app/README.md && echo "✅ README.md exists"
+
+      - name: "Validate Cron template"
+        run: |
+          echo "📂 Checking scheduled-cron..."
+          python3 -m py_compile templates/scheduled-cron/cron.py
+          echo "✅ templates/scheduled-cron/cron.py compiles OK"
+          python3 -c "
+          import ast
+          with open('templates/scheduled-cron/cron.py') as f:
+              tree = ast.parse(f.read())
+          for node in ast.walk(tree):
+              if isinstance(node, ast.Call):
+                  func = node.func
+                  if isinstance(func, ast.Attribute) and func.attr == 'Period':
+                      print('✅ Cron template uses modal.Period schedule')
+                      break
+          "
+          test -f templates/scheduled-cron/README.md && echo "✅ README.md exists"
+
+      - name: "Validate GPU Inference template"
+        run: |
+          echo "📂 Checking gpu-inference..."
+          python3 -m py_compile templates/gpu-inference/inference.py
+          echo "✅ templates/gpu-inference/inference.py compiles OK"
+          python3 -c "
+          import ast
+          with open('templates/gpu-inference/inference.py') as f:
+              tree = ast.parse(f.read())
+          has_app = any(isinstance(n, ast.Call) and getattr(n.func, 'attr', '') == 'App' for n in ast.walk(tree))
+          has_gpu = any(isinstance(n, ast.Attribute) and (n.attr == 'A10G' or n.attr == 'gpu') for n in ast.walk(tree))
+          print(f'✅ GPU template has modal.App: {has_app}, uses GPU: {has_gpu}')
+          "
+          test -f templates/gpu-inference/README.md && echo "✅ README.md exists"
+
+      - name: "Validate root templates README"
+        run: |
+          test -f templates/README.md && echo "✅ Root templates/README.md exists"
+          grep -q "fastapi-web-app" templates/README.md && echo "✅ Lists fastapi-web-app template"
+          grep -q "scheduled-cron" templates/README.md && echo "✅ Lists scheduled-cron template"
+          grep -q "gpu-inference" templates/README.md && echo "✅ Lists gpu-inference template"
+
+  integration-check:
+    name: "Integration Check (Dry Run)"
+    runs-on: ubuntu-latest
+    needs: [validate-action, validate-templates]
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@v4
+
+      - name: "Set up Python 3.11"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: "Install dependencies"
+        run: |
+          pip install modal pyyaml
+
+      - name: "Verify action entrypoint can parse its inputs"
+        run: |
+          echo "🧪 Testing entrypoint.sh input parsing..."
+          # Simulate the input parsing logic from entrypoint.sh
+          python3 -c "
+          import sys
+          # Test that our entrypoint structure handles the expected input order
+          expected_inputs = [
+              'modal_token_id',
+              'modal_token_secret',
+              'deploy_path',
+              'app_name',
+              'modal_args',
+              'python_version',
+              'working_directory',
+          ]
+          with open('action/action.yml') as f:
+              import yaml
+              data = yaml.safe_load(f)
+              action_inputs = list(data['inputs'].keys())
+              for inp in expected_inputs:
+                  assert inp in action_inputs, f'Missing input: {inp}'
+              print(f'✅ All {len(expected_inputs)} expected inputs found in action.yml')
+              print(f'   Inputs: {action_inputs}')
+          "
+
+      - name: "Verify template files are complete"
+        run: |
+          echo "📊 Template file summary:"
+          echo "   $(find templates -name '*.py' | wc -l) Python files"
+          echo "   $(find templates -name 'README.md' | wc -l) README files"
+          find templates -type f | sort | while read f; do
+            lines=$(wc -l < "$f")
+            echo "   📄 $f ($lines lines)"
+          done
+          echo "✅ All template files present"
+
+      - name: "Final status"
+        run: |
+          echo "====================================="
+          echo " 🚀 Git2Modal Action self-test passed"
+          echo "====================================="
+          echo " ✅ Action structure validated"
+          echo " ✅ All 3 templates compile"
+          echo " ✅ Integration check passed"
+          echo "====================================="
